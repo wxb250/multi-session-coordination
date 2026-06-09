@@ -1,6 +1,6 @@
 ---
 name: multi-session-project-coordinator
-description: Use when coordinating multiple existing Codex threads or sessions, or when evaluating a completed development plan to decide whether workload, domain boundaries, risk, duration, and the optimal number of workers justify multi-session division of labor; also use when planning, creating, supervising, polling, or integrating long-lived Codex worker sessions across project worktrees, rounds, approvals, blockers, and safety boundaries.
+description: Use when coordinating multiple existing Codex threads or sessions, or when evaluating a completed development plan to decide whether workload, domain boundaries, risk, duration, and the optimal number of workers justify multi-session division of labor; also use when planning, creating, supervising, polling, or integrating long-lived Codex worker sessions across project worktrees, pending worktree forks, fallback worktrees, rounds, approvals, blockers, and safety boundaries.
 ---
 
 # Multi-Session Project Coordinator
@@ -71,10 +71,45 @@ Before creating or forking workers, verify the project target. Do not trust a sa
 2. Run non-destructive checks in that exact directory: `git -C <path> rev-parse --show-toplevel` and `git -C <path> status --short`.
 3. If a saved project points at a non-git directory or the wrong repository, do not create workers from it. Fork a known-good thread that is already attached to the real repository, or ask the user for the correct project target.
 4. Prefer detached worktrees for concurrent code work unless the user explicitly requests shared-local execution.
-5. If worktree creation returns only a pending id, wait until the actual child thread exists before dispatching.
+5. If worktree creation returns only a pending id, follow Pending Worktree Fallback Gate before dispatching.
 6. After creation, read each worker thread and verify its cwd and git status before sending scoped work.
 
 Never put two workers in the same checkout for overlapping code changes.
+
+## Pending Worktree Fallback Gate
+
+When `fork_thread` or `create_thread` returns `pendingWorktreeId` instead of a child `threadId`, use the official path briefly, then stop waiting and fall back.
+
+1. Record `pendingWorktreeId`, source thread id, intended repository root, intended branch or starting state, expected worker label, and expected worktree path if known.
+2. Poll `list_threads` every 15 seconds for at most 60 seconds.
+3. For each plausible child thread, call `read_thread` and verify the thread cwd, assigned worktree/path, and recent git status before treating it as the worker.
+4. If no verified child thread exists after 60 seconds, mark the pending fork as unreliable and switch to Manual Worktree Fallback. Do not keep polling just because the pending id still exists.
+5. Do not inspect or edit Codex internal state files to infer pending failure reasons. Treat unavailable pending logs as unavailable.
+
+Do not send substantive worker tasks to a pending id. `pendingWorktreeId` is not a worker thread id.
+
+## Manual Worktree Fallback
+
+Use this path when pending worktree setup exceeds the 60 second gate or repeatedly fails without exposed diagnostics.
+
+1. Verify the real repository root:
+
+```powershell
+git -C <repo> rev-parse --show-toplevel
+git -C <repo> status --short
+```
+
+2. Create one isolated worktree per worker, using predictable names:
+
+```powershell
+git -C <repo> worktree add <worktree-path> -b coord/<topic>/<role>
+```
+
+If the branch already exists, append a short id: `coord/<topic>/<role>-<shortid>`.
+
+3. Create or direct each worker thread to the exact manual worktree directory. If the thread tool cannot bind directly to that directory, stop dispatch and ask for a thread attached to that path.
+4. Before sending any real task, read the worker thread and verify its cwd equals the assigned worktree. If cwd does not match, do not dispatch.
+5. In every fallback dispatch, state that the official pending worktree path was abandoned and that all writes must stay inside the manual worktree.
 
 ## Required Setup
 
@@ -161,6 +196,7 @@ Each worker prompt should include:
 - worker-specific worktree/path
 - files to read before designing
 - preflight commands: confirm cwd, run `git status --short`, and report unexpected dirty files
+- fallback status if the worker uses a manual `git worktree add` directory
 - approval posture and stop gates
 - forbidden areas and data-safety rules
 - required validation commands
@@ -218,6 +254,9 @@ Before integrating worker changes into the main checkout:
 - Creating workers from an unverified saved project that points to a non-git or wrong directory.
 - Assuming `create_thread` configured auto-approval when the tool schema has no approval field.
 - Sending work before verifying the child thread's actual cwd and git status.
+- Treating `pendingWorktreeId` as a worker thread id.
+- Waiting indefinitely for a pending worktree fork instead of switching to Manual Worktree Fallback after 60 seconds.
+- Dispatching substantive work to a fallback worker before verifying its cwd equals the manual worktree.
 - Continuing automation after the project is blocked on user-provided environment inputs.
 - Letting a worker broaden its role because another worker is idle.
 - Writing "passed" for evidence that is only a command template or pending prerequisite.

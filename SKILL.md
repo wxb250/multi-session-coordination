@@ -169,7 +169,7 @@ Do not edit Codex internal state files to force approval policy changes. Treat a
 2. List expected files in the shared output root.
 3. If any assigned worker has a worktree but no verified thread or dispatch, finish Worker Thread Dispatch Gate before claiming the round has started.
 4. If every worker is still running, write a short status note and do not dispatch.
-5. If some workers are complete and others are running, record partial completion and do not interrupt active workers.
+5. If some workers are complete and others are running, record partial completion, do not interrupt active workers, and evaluate Idle Worker Micro-Task Gate before dispatching any early work.
 6. If all workers are complete, read all expected outputs and cross-check:
    - role boundary compliance
    - required files
@@ -181,6 +181,53 @@ Do not edit Codex internal state files to force approval policy changes. Treat a
    - `DEVELOPMENT_ROUND_(N+1)_DISPATCH.md`
 8. Send each worker only its own scoped task, with inputs, forbidden areas, validation commands, and exact output path.
 9. If work cannot continue without user input, generate the input checklist and pause dispatch.
+
+## Idle Worker Micro-Task Gate
+
+During heartbeat or manual polling, an idle worker may receive a very small early task only when it improves throughput without changing the overall round plan. Treat this as optional capacity use, not as permission to start the next round.
+
+A worker is idle only if its current dispatch is complete, the thread is not running or blocked, its cwd is still verified, and it has no pending review, unsafe dirty work, or unresolved stop condition. A pending fork, approval-blocked worker, or worker with unreviewed output is not idle.
+
+Before sending an idle micro-task, all of these must be true:
+
+- The task can finish in one short pass and has a single narrow output.
+- The work stays inside the worker's confirmed role, worktree, and allowed write set.
+- The task does not depend on unfinished outputs from active workers.
+- The task does not modify shared contracts, schemas, migrations, dependency files, lockfiles, routing roots, global config, or integration files unless it is explicitly read-only.
+- The task is unlikely to conflict with active workers by file path or domain boundary.
+- The output will help the current integration, next planning step, validation, documentation, or risk reduction.
+- The prompt includes a stop condition, exact output path, and instruction to stop if the task appears larger than expected.
+
+Prefer read-only or artifact-only micro-tasks:
+
+- audit the worker's own domain for TODOs, missing tests, UI gaps, docs gaps, or acceptance risks
+- run a targeted smoke check and report command output
+- draft a small checklist or verification note under the shared coordination output root
+- inspect likely conflict files and summarize risks without editing them
+- prepare a tiny, scoped fix only when it touches files no active worker owns and does not change public contracts
+
+Do not use idle micro-tasks to:
+
+- start the next full feature or round
+- implement assumptions about unfinished worker outputs
+- broaden a worker into another role
+- fix another worker's failing work
+- perform merge, integration, dependency, migration, or release work
+- create large docs or broad refactors that would distract from the main round
+
+Use this compact dispatch shape:
+
+```text
+Idle micro-task for Round <N>; this is not the next round.
+Worker: <label> / <threadId> / <worktree>
+Purpose: <one sentence>
+Allowed work: <narrow scope and allowed files or artifact path>
+Forbidden work: no cross-role changes, no shared contracts, no dependency or lockfile changes, no assumptions from unfinished workers.
+Stop if: the task needs more than one short pass, touches forbidden files, depends on active workers, or reveals a blocker.
+Output: write/report <exact path or final response shape> with evidence.
+```
+
+Record idle micro-tasks in the worker registry with `status=idle_microtask`, `parent_round`, `micro_task_id`, `allowed_writes`, `output_path`, and completion evidence. When all primary workers finish, review micro-task outputs as supporting evidence only; they do not replace the normal cross-check or integration gate.
 
 ## Stop Conditions
 
@@ -250,6 +297,7 @@ For heartbeat automations:
 - Keep the heartbeat attached to the coordinator thread when the user wants the same conversation to continue managing the project.
 - Keep notifications quiet while no user action is needed.
 - Notify only when advancing a round, hitting a blocker, needing user input, or stopping automation.
+- During each heartbeat, if some workers are idle while others are still running, evaluate Idle Worker Micro-Task Gate. Dispatch at most one micro-task per idle worker per heartbeat, and only if it is safe, useful, and clearly smaller than a normal round task.
 - If automation would keep polling a known user-input blocker, pause or delete it and explain how to resume.
 - Do not leave a stale heartbeat running just to restate the same blocker.
 
@@ -289,5 +337,6 @@ Before integrating worker changes into the main checkout:
 - Dispatching substantive work to a fallback worker before verifying its cwd equals the manual worktree.
 - Continuing automation after the project is blocked on user-provided environment inputs.
 - Letting a worker broaden its role because another worker is idle.
+- Treating idle capacity as permission to start the next round or modify shared contracts before active workers finish.
 - Writing "passed" for evidence that is only a command template or pending prerequisite.
 - Embedding project-specific thread IDs inside reusable instructions.

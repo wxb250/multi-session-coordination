@@ -1,6 +1,6 @@
 ---
 name: multi-session-project-coordinator
-description: Use when coordinating multiple existing Codex threads or sessions, or when evaluating a completed development plan to decide whether workload, domain boundaries, risk, duration, and the optimal number of workers justify multi-session division of labor; also use when planning, creating, supervising, polling, or integrating long-lived Codex worker sessions across project worktrees, pending worktree forks, fallback worktrees, rounds, approvals, blockers, and safety boundaries.
+description: Use when coordinating multiple existing Codex threads or sessions, or when evaluating a completed development plan to decide whether workload, domain boundaries, risk, duration, and the optimal number of workers justify multi-session division of labor; also use when planning, creating, binding, dispatching, supervising, polling, or integrating long-lived Codex worker sessions across project worktrees, pending forks, fallback worktrees, approvals, blockers, and safety boundaries.
 ---
 
 # Multi-Session Project Coordinator
@@ -76,6 +76,16 @@ Before creating or forking workers, verify the project target. Do not trust a sa
 
 Never put two workers in the same checkout for overlapping code changes.
 
+## Thread Tool Availability Check
+
+Before saying worker thread creation is unavailable, inspect the available thread tools for `create_thread`, `fork_thread`, `send_message_to_thread`, `list_threads`, and `read_thread`.
+
+- If direct thread creation exists, use it to create one worker thread per assigned worktree.
+- If only same-directory fork or send-message exists, use the best supported binding path and then verify cwd before dispatch.
+- If no thread creation or messaging tool is available, write the exact missing capability in the coordinator status and produce copy-ready worker prompts as a last resort.
+
+Do not stop at "create the worktrees and ask the user to open sessions" unless the tool check proves there is no supported way to create, fork, or message worker threads.
+
 ## Pending Worktree Fallback Gate
 
 When `fork_thread` or `create_thread` returns `pendingWorktreeId` instead of a child `threadId`, use the official path briefly, then stop waiting and fall back.
@@ -111,11 +121,26 @@ If the branch already exists, append a short id: `coord/<topic>/<role>-<shortid>
 4. Before sending any real task, read the worker thread and verify its cwd equals the assigned worktree. If cwd does not match, do not dispatch.
 5. In every fallback dispatch, state that the official pending worktree path was abandoned and that all writes must stay inside the manual worktree.
 
+## Worker Thread Dispatch Gate
+
+Creating worktrees and dispatch documents is preparation, not worker startup. A worker is not started until a thread exists, its cwd is verified, and its scoped prompt has been sent.
+
+For each worker:
+
+1. Create or identify the thread attached to the assigned worktree.
+2. Read the thread and verify cwd equals the assigned worktree.
+3. Run or request the worker preflight: `git status --short`.
+4. Send only that worker's scoped dispatch, including forbidden areas, output path, validation commands, approval posture, and stop gates.
+5. Record `threadId`, `worktree_created`, `thread_created`, `cwd_verified`, `dispatch_sent`, and current status in the worker registry.
+
+Do not use the user as a prompt router. If a worker prompt must be copied manually because tools are unavailable, present it as a fallback blocker with the minimum user actions required, not as a completed startup.
+
 ## Required Setup
 
 Before coordinating, identify:
 
 - Worker sessions: ID, label, role, worktree/path, expected output files.
+- Worker startup state: worktree created, thread created, cwd verified, dispatch sent, running/completed/blocked.
 - Shared output root: all coordinator and worker artifacts must go there.
 - Round number and current dispatch document.
 - Hard boundaries: actions that stop automation and require user confirmation.
@@ -142,19 +167,20 @@ Do not edit Codex internal state files to force approval policy changes. Treat a
 
 1. Read each worker thread status and latest output.
 2. List expected files in the shared output root.
-3. If every worker is still running, write a short status note and do not dispatch.
-4. If some workers are complete and others are running, record partial completion and do not interrupt active workers.
-5. If all workers are complete, read all expected outputs and cross-check:
+3. If any assigned worker has a worktree but no verified thread or dispatch, finish Worker Thread Dispatch Gate before claiming the round has started.
+4. If every worker is still running, write a short status note and do not dispatch.
+5. If some workers are complete and others are running, record partial completion and do not interrupt active workers.
+6. If all workers are complete, read all expected outputs and cross-check:
    - role boundary compliance
    - required files
    - validation results
    - unsafe claims or actions
    - conflicts between worker outputs
-6. If safe and actionable, generate:
+7. If safe and actionable, generate:
    - `ROUND_N_<topic>_CROSS_CHECK_AND_NEXT_PLAN.md`
    - `DEVELOPMENT_ROUND_(N+1)_DISPATCH.md`
-7. Send each worker only its own scoped task, with inputs, forbidden areas, validation commands, and exact output path.
-8. If work cannot continue without user input, generate the input checklist and pause dispatch.
+8. Send each worker only its own scoped task, with inputs, forbidden areas, validation commands, and exact output path.
+9. If work cannot continue without user input, generate the input checklist and pause dispatch.
 
 ## Stop Conditions
 
@@ -194,6 +220,7 @@ Each worker prompt should include:
 - source coordinator thread ID, if available
 - worker label, role, and exact scope
 - worker-specific worktree/path
+- worker thread id and cwd verification status, if already available
 - files to read before designing
 - preflight commands: confirm cwd, run `git status --short`, and report unexpected dirty files
 - fallback status if the worker uses a manual `git worktree add` directory
@@ -254,6 +281,9 @@ Before integrating worker changes into the main checkout:
 - Creating workers from an unverified saved project that points to a non-git or wrong directory.
 - Assuming `create_thread` configured auto-approval when the tool schema has no approval field.
 - Sending work before verifying the child thread's actual cwd and git status.
+- Claiming workers are started when only worktrees and dispatch files exist.
+- Making the user copy worker prompts when thread creation or messaging tools are available.
+- Declaring thread tools unavailable without checking the available thread tool surface.
 - Treating `pendingWorktreeId` as a worker thread id.
 - Waiting indefinitely for a pending worktree fork instead of switching to Manual Worktree Fallback after 60 seconds.
 - Dispatching substantive work to a fallback worker before verifying its cwd equals the manual worktree.
